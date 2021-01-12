@@ -15,6 +15,7 @@ except ImportError:
 
 from std_msgs.msg import Float32, UInt64
 
+POLL_PERIOD = 1.0
 
 def ns_join(*names):
   return reduce(rospy.names.ns_join, names, "")
@@ -37,8 +38,6 @@ if __name__ == "__main__":
   rospy.init_node("cpu_monitor")
   master = rospy.get_master()
 
-  poll_period = rospy.get_param('~poll_period', 1.0)
-
   this_ip = os.environ.get("ROS_IP")
 
   node_map = {}
@@ -56,6 +55,11 @@ if __name__ == "__main__":
     mem_publishers.append(rospy.Publisher("cpu_monitor/total_%s_mem" % mem_topic,
                                           UInt64, queue_size=20))
 
+  temp_publishers = []
+  for temp_topic in range(4):
+    temp_publishers.append(rospy.Publisher("cpu_monitor/cpu_%s_temp" % temp_topic,
+                                          Float32, queue_size=20))
+
   while not rospy.is_shutdown():
     for node in rosnode.get_node_names():
       if node in node_map or node in ignored_nodes:
@@ -66,11 +70,9 @@ if __name__ == "__main__":
         rospy.logerr("[cpu monitor] failed to get api of node %s (%s)" % (node, node_api))
         continue
 
-      ros_ip = node_api[7:] # strip http://
-      ros_ip = ros_ip.split(':')[0] # strip :<port>/
       local_node = "localhost" in node_api or \
                    "127.0.0.1" in node_api or \
-                   (this_ip is not None and this_ip == ros_ip) or \
+                   (this_ip is not None and this_ip in node_api) or \
                    subprocess.check_output("hostname").strip() in node_api
       if not local_node:
         ignored_nodes.add(node)
@@ -82,13 +84,8 @@ if __name__ == "__main__":
       except:
         rospy.logerr("[cpu monitor] failed to get pid of node %s (api is %s)" % (node, node_api))
       else:
-        try:
-          pid = resp[2]
-        except:
-          rospy.logerr("[cpu monitor] failed to get pid for node %s from NODEINFO response: %s" % (node, resp))
-        else:
-          node_map[node] = Node(name=node, pid=pid)
-          rospy.loginfo("[cpu monitor] adding new node %s" % node)
+        node_map[node] = Node(node, resp[2])
+        rospy.loginfo("[cpu monitor] adding new node %s" % node)
 
     for node_name, node in list(node_map.items()):
       if node.alive():
@@ -99,8 +96,14 @@ if __name__ == "__main__":
 
     cpu_publish.publish(Float32(psutil.cpu_percent()))
 
+
+    cpu_id = [4,6,9,11]
+    for idx,pt in enumerate(temp_publishers):
+      id = "tsens_tz_sensor" + str(cpu_id[idx])
+      pt.publish(Float32(psutil.sensors_temperatures()[id][0].current * 100))
+
     vm = psutil.virtual_memory()
     for mem_topic, mem_publisher in zip(mem_topics, mem_publishers):
       mem_publisher.publish(UInt64(getattr(vm, mem_topic)))
 
-    rospy.sleep(poll_period)
+    rospy.sleep(POLL_PERIOD)
